@@ -3,6 +3,7 @@
 
 using Microsoft.DotNet.Build.Tasks.Feed.Model;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace Microsoft.DotNet.Build.Tasks.Feed
 {
@@ -12,7 +13,6 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         protected bool IsStableBuild { get; set; }
         protected string RepositoryName { get; set; }
         protected string CommitSha { get; set; }
-        protected string AzureStorageTargetFeedPAT { get; set; }
         protected bool PublishInstallersAndChecksums { get; set; }
         protected string InstallersTargetStaticFeed { get; set; }
         protected string InstallersAzureAccountKey { get; set; }
@@ -21,14 +21,13 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         protected string AzureDevOpsStaticShippingFeed { get; set; }
         protected string AzureDevOpsStaticTransportFeed { get; set; }
         protected string AzureDevOpsStaticSymbolsFeed { get; set; }
-        protected string LatestLinkShortUrlPrefix { get; set; }
+        protected ImmutableList<string> LatestLinkShortUrlPrefixes { get; set; }
         protected string AzureDevOpsFeedsKey { get; set; }
 
         protected SetupTargetFeedConfigBase(bool isInternalBuild,
             bool isStableBuild,
             string repositoryName,
             string commitSha,
-            string azureStorageTargetFeedPAT,
             bool publishInstallersAndChecksums,
             string installersTargetStaticFeed,
             string installersAzureAccountKey,
@@ -37,14 +36,13 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string azureDevOpsStaticShippingFeed,
             string azureDevOpsStaticTransportFeed,
             string azureDevOpsStaticSymbolsFeed,
-            string latestLinkShortUrlPrefix,
+            ImmutableList<string> latestLinkShortUrlPrefixes,
             string azureDevOpsFeedsKey)
         {
             IsInternalBuild = isInternalBuild;
             IsStableBuild = isStableBuild;
             RepositoryName = repositoryName;
             CommitSha = commitSha;
-            AzureStorageTargetFeedPAT = azureStorageTargetFeedPAT;
             PublishInstallersAndChecksums = publishInstallersAndChecksums;
             InstallersTargetStaticFeed = installersTargetStaticFeed;
             InstallersAzureAccountKey = installersAzureAccountKey;
@@ -53,7 +51,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             AzureDevOpsStaticShippingFeed = azureDevOpsStaticShippingFeed;
             AzureDevOpsStaticTransportFeed = azureDevOpsStaticTransportFeed;
             AzureDevOpsStaticSymbolsFeed = azureDevOpsStaticSymbolsFeed;
-            LatestLinkShortUrlPrefix = latestLinkShortUrlPrefix;
+            LatestLinkShortUrlPrefixes = latestLinkShortUrlPrefixes;
             AzureDevOpsFeedsKey = azureDevOpsFeedsKey;
         }
         public abstract List<TargetFeedConfig> Setup();

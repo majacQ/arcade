@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection.PortableExecutable;
+using System.Collections.Generic;
 
 namespace Microsoft.DotNet.SignTool
 {
@@ -16,7 +17,7 @@ namespace Microsoft.DotNet.SignTool
     /// </summary>
     internal sealed class RealSignTool : SignTool
     {
-        private readonly string _msbuildPath;
+        private readonly string _dotnetPath;
         private readonly string _logDir;
         private readonly string _snPath;
 
@@ -34,14 +35,14 @@ namespace Microsoft.DotNet.SignTool
         internal RealSignTool(SignToolArgs args, TaskLoggingHelper log) : base(args, log)
         {
             TestSign = args.TestSign;
-            _msbuildPath = args.MSBuildPath;
+            _dotnetPath = args.DotNetPath;
             _snPath = args.SNBinaryPath;
             _logDir = args.LogDir;
         }
 
         public override bool RunMSBuild(IBuildEngine buildEngine, string projectFilePath, string binLogPath)
         {
-            if (_msbuildPath == null)
+            if (_dotnetPath == null)
             {
                 return buildEngine.BuildProjectFile(projectFilePath, null, null, null);
             }
@@ -50,8 +51,8 @@ namespace Microsoft.DotNet.SignTool
 
             var process = Process.Start(new ProcessStartInfo()
             {
-                FileName = _msbuildPath,
-                Arguments = $@"""{projectFilePath}"" /bl:""{binLogPath}""",
+                FileName = _dotnetPath,
+                Arguments = $@"build ""{projectFilePath}"" -bl:""{binLogPath}""",
                 UseShellExecute = false,
                 WorkingDirectory = TempDir,
             });
@@ -67,69 +68,82 @@ namespace Microsoft.DotNet.SignTool
             return true;
         }
 
-        public override void RemovePublicSign(string assemblyPath)
+        public override void RemoveStrongNameSign(string assemblyPath)
         {
-            using (var stream = new FileStream(assemblyPath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
-            using (var peReader = new PEReader(stream))
-            using (var writer = new BinaryWriter(stream))
+            StrongName.ClearStrongNameSignedBit(assemblyPath);
+        }
+
+        public override SigningStatus VerifySignedPEFile(Stream assemblyStream)
+        {
+            // The assembly won't verify by design when doing test signing, but pretend it is.
+            if (TestSign)
             {
-                if (!ContentUtil.IsPublicSigned(peReader))
+                return SigningStatus.Signed;
+            }
+
+            return VerifySignatures.IsSignedPE(assemblyStream);
+        }
+        public override SigningStatus VerifyStrongNameSign(string fileFullPath)
+        {
+            // The assembly won't verify by design when doing test signing.
+            if (TestSign)
+            {
+                return SigningStatus.Signed;
+            }
+
+            return StrongName.IsSigned(fileFullPath, snPath:_snPath, log: _log) ? SigningStatus.Signed : SigningStatus.NotSigned;
+        }
+
+        public override SigningStatus VerifySignedDeb(TaskLoggingHelper log, string filePath)
+        {
+            return VerifySignatures.IsSignedDeb(log, filePath);
+        }
+
+        public override SigningStatus VerifySignedRpm(TaskLoggingHelper log, string filePath)
+        {
+            return VerifySignatures.IsSignedRpm(log, filePath);
+        }
+
+        public override SigningStatus VerifySignedPowerShellFile(string filePath)
+        {
+            return VerifySignatures.IsSignedPowershellFile(filePath);
+        }
+
+        public override SigningStatus VerifySignedNuGet(string filePath)
+        {
+            return VerifySignatures.IsSignedNupkg(filePath);
+        }
+
+        public override SigningStatus VerifySignedVSIX(string filePath)
+        {
+            // Open the VSIX and check for the digital signature file.
+            return VerifySignatures.IsSignedVSIXByFileMarker(filePath);
+        }
+
+        public override SigningStatus VerifySignedPkgOrAppBundle(TaskLoggingHelper log, string fullPath, string pkgToolPath)
+        {
+            return VerifySignatures.IsSignedPkgOrAppBundle(log, fullPath, pkgToolPath);
+        }
+
+        public override bool LocalStrongNameSign(IBuildEngine buildEngine, int round, IEnumerable<FileSignInfo> files)
+        {
+            var filesToLocallyStrongNameSign = files.Where(f => f.SignInfo.ShouldLocallyStrongNameSign);
+
+            if (filesToLocallyStrongNameSign.Any())
+            {
+                _log.LogMessage($"Locally strong naming {filesToLocallyStrongNameSign.Count()} files.");
+
+                foreach (var file in filesToLocallyStrongNameSign)
                 {
-                    return;
+                    if (!LocalStrongNameSign(file))
+                    {
+                        _log.LogMessage(MessageImportance.High, $"Failed to locally strong name sign '{file.FileName}'");
+                        return false;
+                    }
                 }
-
-                stream.Position = peReader.PEHeaders.CorHeaderStartOffset + OffsetFromStartOfCorHeaderToFlags;
-                writer.Write((UInt32)(peReader.PEHeaders.CorHeader.Flags & ~CorFlags.StrongNameSigned));
-            }
-        }
-
-        public override bool VerifySignedPEFile(Stream assemblyStream)
-        {
-            // The assembly won't verify by design when doing test signing.
-            if (TestSign)
-            {
-                return true;
             }
 
-            return ContentUtil.IsAuthenticodeSigned(assemblyStream);
-        }
-
-        public override bool VerifyStrongNameSign(string fileFullPath)
-        {
-            // The assembly won't verify by design when doing test signing.
-            if (TestSign)
-            {
-                return true;
-            }
-
-            var process = Process.Start(new ProcessStartInfo()
-            {
-                FileName = _snPath,
-                Arguments = $@"-vf ""{fileFullPath}"" > nul",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = false,
-                RedirectStandardOutput = false
-            });
-
-            process.WaitForExit();
-
-            return process.ExitCode == 0;
-        }
-
-        public override bool VerifySignedPowerShellFile(string filePath)
-        {
-            return VerifySignatures.VerifySignedPowerShellFile(filePath);
-        }
-
-        public override bool VerifySignedNugetFileMarker(string filePath)
-        {
-            return VerifySignatures.VerifySignedNupkgByFileMarker(filePath);
-        }
-
-        public override bool VerifySignedVSIXFileMarker(string filePath)
-        {
-            return VerifySignatures.VerifySignedVSIXByFileMarker(filePath);
+            return true;
         }
     }
 }

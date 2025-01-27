@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Numerics;
+using System.Text.RegularExpressions;
 using Microsoft.DotNet.VersionTools.BuildManifest.Model;
 
 namespace Microsoft.DotNet.Build.Tasks.Feed.Model
@@ -31,18 +33,20 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
         /// <summary>
         /// The name that should be used for creating Aka.ms links for this channel.
         /// </summary>
-        public string AkaMSChannelName { get; }
+        public ImmutableList<string> AkaMSChannelNames { get; }
+
+        public ImmutableList<Regex> AkaMSCreateLinkPatterns { get; }
+
+        public ImmutableList<Regex> AkaMSDoNotCreateLinkPatterns { get; }
 
         public ImmutableList<TargetFeedSpecification> TargetFeeds { get; }
 
         /// <summary>
         /// Should publish to Msdl
         /// </summary>
-        public SymbolTargetType SymbolTargetType { get; }
+        public SymbolPublishVisibility SymbolTargetType { get; }
 
         public bool IsInternal { get; }
-
-        public ImmutableList<string> FilenamesToExclude { get; }
 
         public bool Flatten { get; }
 
@@ -50,20 +54,23 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
             int id,
             bool isInternal,
             PublishingInfraVersion publishingInfraVersion,
-            string akaMSChannelName,
+            ImmutableList<string> akaMSChannelNames,
+            ImmutableList<Regex> akaMSCreateLinkPatterns,
+            ImmutableList<Regex> akaMSDoNotCreateLinkPatterns,
             IEnumerable<TargetFeedSpecification> targetFeeds,
-            SymbolTargetType symbolTargetType,
-            List<string> filenamesToExclude = null,
+            SymbolPublishVisibility symbolTargetType,
             bool flatten = true)
         {
+
             Id = id;
             IsInternal = isInternal;
             PublishingInfraVersion = publishingInfraVersion;
-            AkaMSChannelName = akaMSChannelName;
+            AkaMSChannelNames = akaMSChannelNames ?? ImmutableList<string>.Empty;
             TargetFeeds = targetFeeds.ToImmutableList();
             SymbolTargetType = symbolTargetType;
-            FilenamesToExclude = filenamesToExclude?.ToImmutableList() ?? ImmutableList<string>.Empty;
             Flatten = flatten;
+            AkaMSCreateLinkPatterns = akaMSCreateLinkPatterns ?? ImmutableList<Regex>.Empty;
+            AkaMSDoNotCreateLinkPatterns = akaMSDoNotCreateLinkPatterns ?? ImmutableList<Regex>.Empty;
         }
 
         public override string ToString()
@@ -71,36 +78,50 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
             return
                 $"\n Channel ID: '{Id}' " +
                 $"\n Infra-version: '{PublishingInfraVersion}' " +
-                $"\n AkaMSChannelName: '{AkaMSChannelName}' " +
+                $"\n AkaMSChannelName: \n\t{string.Join("\n\t", AkaMSChannelNames)} " +
+                $"\n AkaMSCreateLinkPatterns: \n\t{string.Join("\n\t", AkaMSCreateLinkPatterns.Select(s => s.ToString()))} " +
+                $"\n AkaMSDoNotCreateLinkPatterns: \n\t{string.Join("\n\t", AkaMSDoNotCreateLinkPatterns.Select(s => s.ToString()))} " +
                 "\n Target Feeds:" +
                 $"\n  {string.Join("\n  ", TargetFeeds.Select(f => $"{string.Join(", ", f.ContentTypes)} -> {f.FeedUrl}"))}" +
                 $"\n SymbolTargetType: '{SymbolTargetType}' " +
                 $"\n IsInternal: '{IsInternal}'" +
-                $"\n FilenamesToExclude: \n\t{string.Join("\n\t", FilenamesToExclude)}" +
                 $"\n Flatten: '{Flatten}'";
         }
 
         public override bool Equals(object other)
         {
             if (other is TargetChannelConfig config &&
+                NullAcceptingSequencesEqual(TargetFeeds, config.TargetFeeds) &&
+                NullAcceptingSequencesEqual(AkaMSChannelNames, config.AkaMSChannelNames) &&
+                NullAcceptingSequencesEqual(AkaMSCreateLinkPatterns, config.AkaMSCreateLinkPatterns) &&
+                NullAcceptingSequencesEqual(AkaMSDoNotCreateLinkPatterns, config.AkaMSDoNotCreateLinkPatterns) &&
                 PublishingInfraVersion == config.PublishingInfraVersion &&
                 Id == config.Id &&
-                string.Equals(AkaMSChannelName, config.AkaMSChannelName, StringComparison.OrdinalIgnoreCase) &&
-                TargetFeeds.Count == config.TargetFeeds.Count &&
-                TargetFeeds.Zip(config.TargetFeeds, (l, r) => l.Equals(r)).All(b => b) &&
                 IsInternal == config.IsInternal &&
                 Flatten == config.Flatten)
             {
-                if (FilenamesToExclude is null)
-                    return config.FilenamesToExclude is null;
-                
-                if (config.FilenamesToExclude is null)
-                    return false;
-                
-                return FilenamesToExclude.SequenceEqual(config.FilenamesToExclude);
+                return true;
             }
             
             return false;
+
+
+            static bool NullAcceptingSequencesEqual<T>(IEnumerable<T> left, IEnumerable<T> right)
+            {
+                if (left is not null && right is not null)
+                {
+                    if (!left.SequenceEqual(right))
+                    {
+                        return false;
+                    }
+                }
+                else if ((left is null) ^ (right is null))
+                {
+                    return false;
+                }
+
+                return true;
+            }
         }
 
         public override int GetHashCode()
@@ -109,17 +130,24 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
             hash.Add(PublishingInfraVersion);
             hash.Add(Id);
             hash.Add(IsInternal);
-            hash.Add(AkaMSChannelName);
+            foreach(var akaMSChannelName in AkaMSChannelNames)
+            {
+                hash.Add(akaMSChannelName);
+            }
+            foreach (var akaMSCreateLinkPatterns in AkaMSCreateLinkPatterns)
+            {
+                hash.Add(akaMSCreateLinkPatterns.ToString());
+            }
+            foreach (var akaMSDoNotCreateLinkPatterns in AkaMSDoNotCreateLinkPatterns)
+            {
+                hash.Add(akaMSDoNotCreateLinkPatterns.ToString());
+            }
             foreach (var feedSpec in TargetFeeds)
             {
                 hash.Add(feedSpec);
             }
             hash.Add(SymbolTargetType);
             hash.Add(Flatten);
-            foreach (string fileName in FilenamesToExclude)
-            {
-                hash.Add(fileName);
-            }
 
             return hash.ToHashCode();
         }
@@ -153,6 +181,15 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
 
         public TargetFeedSpecification(IEnumerable<TargetFeedContentType> contentTypes, string feedUrl, AssetSelection assets)
         {
+            // A feed targeted for content type 'Package' may not have asset selection 'All'.
+            // During TargetFeedConfig creation, the default feed spec for shipping packages will be ignored and replaced with
+            // a separate target feed config.
+
+            if (assets == AssetSelection.All && contentTypes.Contains(TargetFeedContentType.Package))
+            {
+                throw new ArgumentException($"Target feed specification for {feedUrl} must have a separated asset selection 'ShippingOnly' and 'NonShippingOnly' packages");
+            }
+
             ContentTypes = contentTypes.ToImmutableList();
             FeedUrl = feedUrl;
             Assets = assets;

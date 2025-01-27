@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Azure;
 
 namespace Microsoft.DotNet.Build.Tasks.Feed.Model
@@ -52,27 +53,29 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
         /// Not applicable to packages
         /// Generates a link the blob, stripping away any version information in the file or blob path.
         /// E.g. 
-        ///      [LatestLinkShortUrlPrefix]/aspnetcore/Runtime/dotnet-hosting-win.exe -> aspnetcore/Runtime/3.1.0-preview2.19511.6/dotnet-hosting-3.1.0-preview2.19511.6-win.exe
+        ///      [LatestLinkShortUrlPrefixes]/aspnetcore/Runtime/dotnet-hosting-win.exe -> aspnetcore/Runtime/3.1.0-preview2.19511.6/dotnet-hosting-3.1.0-preview2.19511.6-win.exe
         /// </summary>
-        public string LatestLinkShortUrlPrefix { get; }
+        public ImmutableList<string> LatestLinkShortUrlPrefixes { get; }
 
-        public SymbolTargetType SymbolTargetType { get; }
+        public SymbolPublishVisibility SymbolPublishVisibility { get; }
 
-        public ImmutableList<string> FilenamesToExclude { get; }
+        public ImmutableList<Regex> AkaMSCreateLinkPatterns { get; }
+        public ImmutableList<Regex> AkaMSDoNotCreateLinkPatterns { get; }
 
         public bool Flatten { get; }
 
         public TargetFeedConfig(TargetFeedContentType contentType, 
             string targetURL, 
             FeedType type, 
-            string token, 
-            string latestLinkShortUrlPrefix = null, 
+            string token,
+            ImmutableList<string> latestLinkShortUrlPrefixes = null,
+            ImmutableList<Regex> akaMSCreateLinkPatterns = null,
+            ImmutableList<Regex> akaMSDoNotCreateLinkPatterns = null,
             AssetSelection assetSelection = AssetSelection.All, 
             bool isolated = false, 
             bool @internal = false, 
             bool allowOverwrite = false, 
-            SymbolTargetType symbolTargetType = SymbolTargetType.None, 
-            IEnumerable<string> filenamesToExclude = null,
+            SymbolPublishVisibility symbolPublishVisibility = SymbolPublishVisibility.None, 
             bool flatten = true)
         {
             ContentType = contentType;
@@ -83,42 +86,47 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
             Isolated = isolated;
             Internal = @internal;
             AllowOverwrite = allowOverwrite;
-            LatestLinkShortUrlPrefix = latestLinkShortUrlPrefix ?? string.Empty;
-            SymbolTargetType = symbolTargetType;
-            FilenamesToExclude = filenamesToExclude?.ToImmutableList() ?? ImmutableList<string>.Empty;
+            LatestLinkShortUrlPrefixes = latestLinkShortUrlPrefixes ?? ImmutableList<string>.Empty;
+            AkaMSCreateLinkPatterns = akaMSCreateLinkPatterns ?? ImmutableList<Regex>.Empty;
+            AkaMSDoNotCreateLinkPatterns = akaMSDoNotCreateLinkPatterns ?? ImmutableList<Regex>.Empty;
+            SymbolPublishVisibility = symbolPublishVisibility;
             Flatten = flatten;
         }
 
         public override bool Equals(object obj)
         {
-            if (  
-                obj is TargetFeedConfig other &&
+            return obj is TargetFeedConfig other &&
                 (ContentType == other.ContentType) &&
-                TargetURL.Equals(other.TargetURL, StringComparison.OrdinalIgnoreCase) &&
+                ((TargetURL is null && other.TargetURL is null) || TargetURL.Equals(other.TargetURL, StringComparison.OrdinalIgnoreCase)) &&
                 (Type == other.Type) &&
-                Token.Equals(other.Token) &&
-                LatestLinkShortUrlPrefix.Equals(other.LatestLinkShortUrlPrefix, StringComparison.OrdinalIgnoreCase) &&
+                ((Token is null && other.Token is null) || (Token != null && Token.Equals(other.Token))) &&
+                LatestLinkShortUrlPrefixes.SequenceEqual(other.LatestLinkShortUrlPrefixes) &&
                 (AssetSelection == other.AssetSelection) &&
                 (Isolated == other.Isolated) &&
                 (Internal == other.Internal) &&
                 (AllowOverwrite == other.AllowOverwrite) &&
-                (Flatten == other.Flatten))
-            {
-                if (FilenamesToExclude is null)
-                    return other.FilenamesToExclude is null;
-                
-                if (other.FilenamesToExclude is null)
-                    return false;
-                
-                return FilenamesToExclude.SequenceEqual(other.FilenamesToExclude);
-            }
-
-            return false;
+                (Flatten == other.Flatten) &&
+                // Basically all of the time the akams patterns will use the default and be ref-equal
+                (AkaMSCreateLinkPatterns == other.AkaMSCreateLinkPatterns || 
+                    (AkaMSCreateLinkPatterns.Select(p => p.ToString()).SequenceEqual(other.AkaMSCreateLinkPatterns.Select(p => p.ToString())))) &&
+                (AkaMSDoNotCreateLinkPatterns == other.AkaMSDoNotCreateLinkPatterns ||
+                    (AkaMSDoNotCreateLinkPatterns.Select(p => p.ToString()).SequenceEqual(other.AkaMSDoNotCreateLinkPatterns.Select(p => p.ToString()))));
         }
 
         public override int GetHashCode()
         {
-            return (ContentType, Type, AssetSelection, Isolated, Internal, AllowOverwrite, LatestLinkShortUrlPrefix, TargetURL, Token, Flatten, string.Join(" ", FilenamesToExclude)).GetHashCode();
+            return (ContentType,
+                    Type,
+                    AssetSelection,
+                    Isolated,
+                    Internal,
+                    AllowOverwrite,
+                    string.Join(" ", LatestLinkShortUrlPrefixes),
+                    string.Join(" ", AkaMSCreateLinkPatterns.Select(s => s.ToString())),
+                    string.Join(" ", AkaMSDoNotCreateLinkPatterns.Select(s => s.ToString())),
+                    TargetURL,
+                    Token,
+                    Flatten).GetHashCode();
         }
 
         public override string ToString()
@@ -130,9 +138,10 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
                 $"\n Isolated? '{Isolated}' " +
                 $"\n Internal? '{Internal}' " +
                 $"\n AllowOverwrite? '{AllowOverwrite}' " +
-                $"\n ShortUrlPrefix: '{LatestLinkShortUrlPrefix}' " +
+                $"\n ShortUrlPrefix: \n\t{string.Join("\n\t", LatestLinkShortUrlPrefixes)}" +
+                $"\n AkaMSCreateLinkPatterns: \n\t{string.Join("\n\t", AkaMSCreateLinkPatterns.Select(s => s.ToString()))}" +
+                $"\n AkaMSDoNotCreateLinkPatterns: \n\t{string.Join("\n\t", AkaMSDoNotCreateLinkPatterns.Select(s => s.ToString()))}" +
                 $"\n TargetURL: '{SafeTargetURL}'" +
-                $"\n FilenamesToExclude: \n\t{string.Join("\n\t", FilenamesToExclude)}" +
                 $"\n Flatten: '{Flatten}'";
         }
     }
@@ -156,21 +165,19 @@ namespace Microsoft.DotNet.Build.Tasks.Feed.Model
         Other           = 4096
     }
 
-    [Flags]
-    public enum SymbolTargetType
+    public enum SymbolPublishVisibility
     {
         None = 0,
-        SymWeb = 1,
-        Msdl = 2
+        Internal = 1,
+        Public = 2
     }
 
     /// <summary>
-    /// Whether the target feed URL points to an Azure Feed or an Sleet Feed.
+    /// Whether the target feed URL points to an AzDO feed or a storage container
     /// </summary>
     public enum FeedType
     {
         AzDoNugetFeed,
-        AzureStorageFeed,
         AzureStorageContainer,
     }
 

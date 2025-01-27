@@ -9,7 +9,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using Microsoft.Build.Utilities;
 using Microsoft.DotNet.Build.Tasks.Feed.Model;
-using Microsoft.DotNet.Maestro.Client.Models;
+#if !NET472_OR_GREATER
+using Microsoft.DotNet.ProductConstructionService.Client.Models;
 using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using Task = System.Threading.Tasks.Task;
@@ -61,7 +62,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             _httpClient?.Dispose();
         }
 
-        public AddAssetLocationToAssetAssetLocationType LocationType => AddAssetLocationToAssetAssetLocationType.NugetFeed;
+        public LocationType LocationType => LocationType.NugetFeed;
 
         public async Task PublishAssetAsync(string file, string blobPath, PushOptions options, SemaphoreSlim clientThrottle = null)
         {
@@ -83,7 +84,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
 
             try
             {
-                var config = new TargetFeedConfig(default, _targetUrl, default, default);
+                var config = new TargetFeedConfig(default, _targetUrl, default, default, default, default, default);
                 await _task.PushNugetPackageAsync(config, _httpClient, file, id, version, _feedAccount, _feedVisibility, _feedName);
             }
             catch (Exception e)
@@ -93,3 +94,9 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         }
     }
 }
+#else
+public class AzureDevOpsNugetFeedAssetPublisher : Task
+{
+    public override bool Execute() => throw new NotSupportedException("AzureDevOpsNugetFeedAssetPublisher depends on ProductConstructionService.Client, which has discontinued support for desktop frameworks.");
+}
+#endif

@@ -1,18 +1,17 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Build.Framework;
-using Microsoft.Build.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Runtime.Versioning;
+using Microsoft.Build.Framework;
+using Microsoft.Build.Utilities;
 
 namespace Microsoft.DotNet.SignTool
 {
@@ -20,7 +19,7 @@ namespace Microsoft.DotNet.SignTool
     {
         private readonly TaskLoggingHelper _log;
 
-        private readonly ITaskItem[] _itemsToSign;
+        private readonly List<ItemToSign> _itemsToSign;
 
         /// <summary>
         /// This store content information for container files.
@@ -76,7 +75,7 @@ namespace Microsoft.DotNet.SignTool
         /// This is a list of the friendly name of certificates that can be used to
         /// sign already signed binaries.
         /// </summary>
-        private readonly ITaskItem[] _dualCertificates;
+        private readonly Dictionary<string, List<AdditionalCertificateInformation>> _additionalCertificateInformation;
 
         /// <summary>
         /// Use the content hash in the path of the extracted file paths. 
@@ -98,13 +97,21 @@ namespace Microsoft.DotNet.SignTool
 
         private Telemetry _telemetry;
 
+        private string _tarToolPath;
+
+        private string _pkgToolPath;
+        private string _snPath;
+
         public Configuration(
             string tempDir,
-            ITaskItem[] itemsToSign,
+            List<ItemToSign> itemsToSign,
             Dictionary<string, List<SignInfo>> strongNameInfo,
             Dictionary<ExplicitCertificateKey, string> fileSignInfo,
             Dictionary<string, List<SignInfo>> extensionSignInfo,
-            ITaskItem[] dualCertificates,
+            Dictionary<string, List<AdditionalCertificateInformation>> additionalCertificateInformation,
+            string tarToolPath,
+            string pkgToolPath,
+            string snPath,
             TaskLoggingHelper log,
             bool useHashInExtractionPath = false,
             Telemetry telemetry = null)
@@ -126,12 +133,15 @@ namespace Microsoft.DotNet.SignTool
             _zipDataMap = new Dictionary<SignedFileContentKey, ZipData>();
             _filesByContentKey = new Dictionary<SignedFileContentKey, FileSignInfo>();
             _itemsToSign = itemsToSign;
-            _dualCertificates = dualCertificates == null ? new ITaskItem[0] : dualCertificates;
+            _additionalCertificateInformation = additionalCertificateInformation == null ? new() : additionalCertificateInformation;
             _whichPackagesTheFileIsIn = new Dictionary<SignedFileContentKey, HashSet<string>>();
             _errors = new Dictionary<SigningToolErrorCode, HashSet<SignedFileContentKey>>();
-            _wixPacks = _itemsToSign.Where(w => WixPackInfo.IsWixPack(w.ItemSpec))?.Select(s => new WixPackInfo(s.ItemSpec)).ToList();
+            _wixPacks = _itemsToSign.Where(w => WixPackInfo.IsWixPack(w.FullPath))?.Select(s => new WixPackInfo(s.FullPath)).ToList();
             _hashToCollisionIdMap = new Dictionary<SignedFileContentKey, string>();
             _telemetry = telemetry;
+            _tarToolPath = tarToolPath;
+            _pkgToolPath = pkgToolPath;
+            _snPath = snPath;
         }
 
         internal BatchSignInput GenerateListOfFiles()
@@ -139,22 +149,20 @@ namespace Microsoft.DotNet.SignTool
             Stopwatch gatherInfoTime = Stopwatch.StartNew();
             foreach (var itemToSign in _itemsToSign)
             {
-                string fullPath = itemToSign.ItemSpec;
-                string collisionPriorityId = itemToSign.GetMetadata(SignToolConstants.CollisionPriorityId);
-                var contentHash = ContentUtil.GetContentHash(fullPath);
-                var fileUniqueKey = new SignedFileContentKey(contentHash, Path.GetFileName(fullPath));
+                var contentHash = ContentUtil.GetContentHash(itemToSign.FullPath);
+                var fileUniqueKey = new SignedFileContentKey(contentHash, Path.GetFileName(itemToSign.FullPath));
 
                 if (!_whichPackagesTheFileIsIn.TryGetValue(fileUniqueKey, out var packages))
                 {
                     packages = new HashSet<string>();
                 }
 
-                packages.Add(fullPath);
+                packages.Add(itemToSign.FullPath);
 
                 _whichPackagesTheFileIsIn[fileUniqueKey] = packages;
 
-                PathWithHash pathWithHash = new PathWithHash(fullPath, contentHash);
-                TrackFile(pathWithHash, null, collisionPriorityId);
+                PathWithHash pathWithHash = new PathWithHash(itemToSign.FullPath, contentHash);
+                TrackFile(pathWithHash, null, itemToSign.CollisionPriorityId);
             }
             gatherInfoTime.Stop();
             if (_telemetry != null)
@@ -212,21 +220,29 @@ namespace Microsoft.DotNet.SignTool
                 return fileSignInfo;
             }
 
-            if (fileSignInfo.IsContainer())
+            if (fileSignInfo.IsUnpackableContainer())
             {
-                if (fileSignInfo.IsZipContainer())
-                {
-                    if (TryBuildZipData(fileSignInfo, out var zipData))
-                    {
-                        _zipDataMap[fileSignInfo.FileContentKey] = zipData;
-                    }
-                }
-                else if (fileSignInfo.IsWixContainer())
+                if (fileSignInfo.IsUnpackableWixContainer())
                 {
                     _log.LogMessage($"Trying to gather data for wix container {fileSignInfo.FullPath}");
                     if (TryBuildWixData(fileSignInfo, out var msiData))
                     {
                         _zipDataMap[fileSignInfo.FileContentKey] = msiData;
+                    }
+                    else
+                    {
+                        _log.LogError($"Failed to build wix data for {fileSignInfo.FullPath}");
+                    }
+                }
+                else
+                {
+                    if (TryBuildZipData(fileSignInfo, out var zipData))
+                    {
+                        _zipDataMap[fileSignInfo.FileContentKey] = zipData;
+                    }
+                    else
+                    {
+                        _log.LogError($"Failed to build zip data for {fileSignInfo.FullPath}");
                     }
                 }
             }
@@ -234,7 +250,7 @@ namespace Microsoft.DotNet.SignTool
             _filesByContentKey.Add(fileSignInfo.FileContentKey, fileSignInfo);
 
             bool hasSignableParts = false;
-            if (fileSignInfo.IsContainer())
+            if (fileSignInfo.IsUnpackableContainer())
             {
                 // Only sign containers if the file itself is unsigned, or 
                 // an item in the container is unsigned.
@@ -277,12 +293,21 @@ namespace Microsoft.DotNet.SignTool
             var extension = Path.GetExtension(file.FileName);
             string explicitCertificateName = null;
             var fileSpec = string.Empty;
-            var isAlreadySigned = false;
+            var isAlreadyAuthenticodeSigned = false;
+            var isAlreadyStrongNamed = false;
             var matchedNameTokenFramework = false;
             var matchedNameToken = false;
             var matchedName = false;
             PEInfo peInfo = null;
             SignedFileContentKey signedFileContentKey = new SignedFileContentKey(file.ContentHash, file.FileName);
+
+            // First check for zero length files. These occasionally occur in python and
+            // cannot be signed.
+            if (file.ContentHash == ContentUtil.EmptyFileContentHash)
+            {
+                _log.LogMessage(MessageImportance.Low, $"Ignoring zero length file: {file.FullPath}");
+                return new FileSignInfo(file, SignInfo.Ignore, wixContentFilePath: wixContentFilePath);
+            }
 
             // handle multi-part extensions like ".symbols.nupkg" specified in FileExtensionSignInfo
             if (_fileExtensionSignInfo != null)
@@ -344,10 +369,8 @@ namespace Microsoft.DotNet.SignTool
 
             if (FileSignInfo.IsPEFile(file.FullPath))
             {
-                using (var stream = File.OpenRead(file.FullPath))
-                {
-                    isAlreadySigned = ContentUtil.IsAuthenticodeSigned(stream);
-                }
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedPE(file.FullPath));
+                isAlreadyStrongNamed = IsStrongNameSigned(file);
 
                 peInfo = GetPEInfo(file.FullPath);
 
@@ -367,13 +390,17 @@ namespace Microsoft.DotNet.SignTool
                         pktBasedSignInfo = pktBasedSignInfos.FirstOrDefault();
                     }
 
+                    // If crossgenned, we cannot strong name sign this binary.
+                    // If the file is already strong name signed, then there is no need to re-sign it. The current signing infra
+                    // does not support replacing the SN sig with a new one so if we got here, we can avoid strong name signing
+                    // altogether.
                     if (peInfo.IsCrossgened)
                     {
                         signInfo = new SignInfo(pktBasedSignInfo.Certificate, collisionPriorityId: _hashToCollisionIdMap[signedFileContentKey]);
                     }
                     else
                     {
-                        signInfo = pktBasedSignInfo;
+                        signInfo = pktBasedSignInfo.WithIsAlreadyStrongNamed(isAlreadyStrongNamed);
                     }
 
                     hasSignInfo = true;
@@ -390,41 +417,29 @@ namespace Microsoft.DotNet.SignTool
                 fileSpec = matchedNameTokenFramework ? $" (PublicKeyToken = {peInfo.PublicKeyToken}, Framework = {peInfo.TargetFramework})" :
                         matchedNameToken ? $" (PublicKeyToken = {peInfo.PublicKeyToken})" : string.Empty;
             }
-            else if (FileSignInfo.IsNupkg(file.FullPath) || FileSignInfo.IsVsix(file.FullPath))
+            else if (FileSignInfo.IsPkg(file.FullPath) || FileSignInfo.IsAppBundle(file.FullPath))
             {
-                isAlreadySigned = VerifySignatures.IsSignedContainer(file.FullPath);
-                if(!isAlreadySigned)
-                {
-                    _log.LogMessage(MessageImportance.Low, $"Container {file.FullPath} does not have a signature marker.");
-                }
-                else
-                {
-                    _log.LogMessage(MessageImportance.Low, $"Container {file.FullPath} has a signature marker.");
-                }
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedPkgOrAppBundle(_log, file.FullPath, _pkgToolPath));
             }
-            else if (FileSignInfo.IsWix(file.FullPath))
+            else if (FileSignInfo.IsNupkg(file.FullPath))
             {
-                isAlreadySigned = VerifySignatures.IsDigitallySigned(file.FullPath);
-                if (!isAlreadySigned)
-                {
-                    _log.LogMessage(MessageImportance.Low, $"File {file.FullPath} is not digitally signed.");
-                }
-                else
-                {
-                    _log.LogMessage(MessageImportance.Low, $"File {file.FullPath} is digitally signed.");
-                }
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedNupkg(file.FullPath));
             }
-            else if(FileSignInfo.IsPowerShellScript(file.FullPath))
+            else if (FileSignInfo.IsWixInstaller(file.FullPath))
             {
-                isAlreadySigned = VerifySignatures.VerifySignedPowerShellFile(file.FullPath);
-                if (!isAlreadySigned)
-                {
-                    _log.LogMessage(MessageImportance.Low, $"File {file.FullPath} does not have a signature block.");
-                }
-                else
-                {
-                    _log.LogMessage(MessageImportance.Low, $"File {file.FullPath} has a signature block.");
-                }
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsWixSigned(file.FullPath));
+            }
+            else if (FileSignInfo.IsDeb(file.FullPath))
+            {
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedDeb(_log, file.FullPath));
+            }
+            else if (FileSignInfo.IsRpm(file.FullPath))
+            {
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedRpm(_log, file.FullPath));;
+            }
+            else if (FileSignInfo.IsPowerShellScript(file.FullPath))
+            {
+                isAlreadyAuthenticodeSigned = IsSigned(file, VerifySignatures.IsSignedPowershellFile(file.FullPath));
             }
 
             // We didn't find any specific information for PE files using PKT + TargetFramework
@@ -450,31 +465,64 @@ namespace Microsoft.DotNet.SignTool
 
             if (hasSignInfo)
             {
-                bool dualCerts = _dualCertificates
-                        .Where(d => d.ItemSpec == signInfo.Certificate && 
-                        (d.GetMetadata(SignToolConstants.CollisionPriorityId) == "" ||
-                        d.GetMetadata(SignToolConstants.CollisionPriorityId) == _hashToCollisionIdMap[signedFileContentKey])).Any();
-
-                if (isAlreadySigned && !dualCerts)
+                bool dualCertsAllowed = false;
+                string macSignOperation = null;
+                string macNotarizationAppName = null;
+                if (signInfo.Certificate != null && _additionalCertificateInformation.TryGetValue(signInfo.Certificate, out var additionalInfo))
                 {
-                    return new FileSignInfo(file, signInfo.WithIsAlreadySigned(isAlreadySigned), wixContentFilePath: wixContentFilePath);
+                    var additionalCertInfo = additionalInfo.FirstOrDefault(a => string.IsNullOrEmpty(a.CollisionPriorityId) || 
+                                                                       a.CollisionPriorityId == _hashToCollisionIdMap[signedFileContentKey]);
+                    if (additionalCertInfo != null)
+                    {
+                        dualCertsAllowed = additionalCertInfo.DualSigningAllowed;
+                        macSignOperation = additionalCertInfo.MacSigningOperation;
+                        macNotarizationAppName = additionalCertInfo.MacNotarizationAppName;
+                    }
                 }
 
-                // TODO: implement this check for native PE files as well:
-                // extract copyright from native resource (.rsrc section) 
-                if (signInfo.ShouldSign && peInfo != null && peInfo.IsManaged)
+                // If the file is already signed and we are not allowed to dual sign, and we are not doing a mac notarization operation,
+                // then we should not sign the file.
+                if (isAlreadyAuthenticodeSigned && !dualCertsAllowed && string.IsNullOrEmpty(macNotarizationAppName))
+                {
+                    return new FileSignInfo(file, signInfo.WithIsAlreadySigned(isAlreadyAuthenticodeSigned), wixContentFilePath: wixContentFilePath);
+                }
+
+                // If the certificate indicates that the file has a split sign/notarize operation,
+                // then replace the certificate with the sign certificate and add the notarization operation.
+                if (!string.IsNullOrEmpty(macNotarizationAppName))
+                {
+                    signInfo = signInfo.WithCertificateName(macSignOperation, _hashToCollisionIdMap[signedFileContentKey]);
+                    signInfo = signInfo.WithNotarization(macNotarizationAppName, _hashToCollisionIdMap[signedFileContentKey]);
+                }
+
+                if (signInfo.ShouldSign && peInfo != null)
                 {
                     bool isMicrosoftLibrary = IsMicrosoftLibrary(peInfo.Copyright);
                     bool isMicrosoftCertificate = !IsThirdPartyCertificate(signInfo.Certificate);
                     if (isMicrosoftLibrary != isMicrosoftCertificate)
                     {
+                        string warning;
+                        SigningToolErrorCode code;
                         if (isMicrosoftLibrary)
                         {
-                            LogWarning(SigningToolErrorCode.SIGN001, $"Signing Microsoft library '{file.FullPath}' with 3rd party certificate '{signInfo.Certificate}'. The library is considered Microsoft library due to its copyright: '{peInfo.Copyright}'.");
+                            code = SigningToolErrorCode.SIGN001;
+                            warning = $"Signing Microsoft library '{file.FullPath}' with 3rd party certificate '{signInfo.Certificate}'. The library is considered Microsoft library due to its copyright: '{peInfo.Copyright}'.";
                         }
                         else
                         {
-                            LogWarning(SigningToolErrorCode.SIGN001, $"Signing 3rd party library '{file.FullPath}' with Microsoft certificate '{signInfo.Certificate}'. The library is considered 3rd party library due to its copyright: '{peInfo.Copyright}'.");
+                            code = SigningToolErrorCode.SIGN004;
+                            warning = $"Signing 3rd party library '{file.FullPath}' with Microsoft certificate '{signInfo.Certificate}'. The library is considered 3rd party library due to its copyright: '{peInfo.Copyright}'.";
+                        }
+
+                        // https://github.com/dotnet/arcade/issues/10293
+                        // Turn the else into a warning (and hoist into the if above) after issue is complete.
+                        if (peInfo.IsManaged)
+                        {
+                            LogWarning(code, warning);
+                        }
+                        else
+                        {
+                            _log.LogMessage(MessageImportance.High, $"{code.ToString()}: {warning}");
                         }
                     }
                 }
@@ -482,7 +530,7 @@ namespace Microsoft.DotNet.SignTool
                 return new FileSignInfo(file, signInfo,  (peInfo != null && peInfo.TargetFramework != "") ? peInfo.TargetFramework : null, wixContentFilePath: wixContentFilePath);
             }
 
-            if (SignToolConstants.SignableExtensions.Contains(extension) || SignToolConstants.SignableOSXExtensions.Contains(extension))
+            if (SignToolConstants.SignableExtensions.Contains(extension))
             {
                 // Extract the relative path inside the package / otherwise just return the full path of the file
                 LogError(SigningToolErrorCode.SIGN002, signedFileContentKey);
@@ -493,6 +541,39 @@ namespace Microsoft.DotNet.SignTool
             }
 
             return new FileSignInfo(file, SignInfo.Ignore, wixContentFilePath: wixContentFilePath);
+
+            bool IsSigned(PathWithHash file, SigningStatus signingStatus)
+            {
+                switch (signingStatus)
+                {
+                    case SigningStatus.Signed:
+                        _log.LogMessage(MessageImportance.Low, $"File '{file.FullPath}' is already signed.");
+                        return true;
+                    case SigningStatus.NotSigned:
+                        _log.LogMessage(MessageImportance.Low, $"File '{file.FullPath}' is not signed.");
+                        return false;
+                    case SigningStatus.Unknown:
+                        _log.LogMessage(MessageImportance.Low, $"File '{file.FullPath}' signing status is unknown, treating as unsigned.");
+                        return false;
+                    default:
+                        throw new Exception($"Unexpected signing status {signingStatus}");
+                }
+            }
+
+            bool IsStrongNameSigned(PathWithHash file)
+            {
+                bool isAlreadyStrongNamed = StrongName.IsSigned(file.FullPath, snPath: _snPath, log: _log);
+                if (!isAlreadyStrongNamed)
+                {
+                    _log.LogMessage(MessageImportance.Low, $"PE file {file.FullPath} does not have a valid strong name signature.");
+                }
+                else
+                {
+                    _log.LogMessage(MessageImportance.Low, $"PE file {file.FullPath} has a valid strong name signature.");
+                }
+
+                return isAlreadyStrongNamed;
+            }
         }
 
         private void LogWarning(SigningToolErrorCode code, string message)
@@ -514,7 +595,7 @@ namespace Microsoft.DotNet.SignTool
         /// Copyright used for binary assets (assemblies and packages) built by Microsoft must be Microsoft copyright.
         /// </summary>
         private static bool IsMicrosoftLibrary(string copyright)
-            => copyright.Contains("Microsoft");
+            => copyright != null && copyright.Contains("Microsoft");
 
         private static bool IsThirdPartyCertificate(string name)
             => name.Equals("3PartyDual", StringComparison.OrdinalIgnoreCase) ||
@@ -526,17 +607,31 @@ namespace Microsoft.DotNet.SignTool
 
             if (!isManaged)
             {
-                return new PEInfo(isManaged);
+                return new PEInfo(isManaged, GetNativeLegalCopyright(fullPath));
             }
 
             bool isCrossgened = ContentUtil.IsCrossgened(fullPath);
             string publicKeyToken = ContentUtil.GetPublicKeyToken(fullPath);
 
-            GetTargetFrameworkAndCopyright(fullPath, out string targetFramework, out string copyright);
+            GetManagedTargetFrameworkAndCopyright(fullPath, out string targetFramework, out string copyright);
             return new PEInfo(isManaged, isCrossgened, copyright, publicKeyToken, targetFramework);
         }
 
-        private static void GetTargetFrameworkAndCopyright(string filePath, out string targetFramework, out string copyright)
+        /// <summary>
+        /// Retrieves the copyright info from the file version info resource structure.
+        /// This is used as a backup method, in cases of non-managed binaries as well as managed
+        /// binaries in some cases (crossgen)
+        /// </summary>
+        /// <param name="filePath"></param>
+        /// <returns></returns>
+        private static string GetNativeLegalCopyright(string filePath)
+        {
+            var fileVersionInfo = FileVersionInfo.GetVersionInfo(filePath);
+            // Native assets have a space rather than an empty string if there is not a legal copyright available.
+            return fileVersionInfo.LegalCopyright?.Trim();
+        }
+
+        private static void GetManagedTargetFrameworkAndCopyright(string filePath, out string targetFramework, out string copyright)
         {
             targetFramework = string.Empty;
             copyright = string.Empty;
@@ -562,6 +657,12 @@ namespace Microsoft.DotNet.SignTool
                         }
                     }
                 }
+            }
+
+            // If there is no copyright available, it's possible this was a r2r binary. Get the native info instead.
+            if (string.IsNullOrEmpty(copyright))
+            {
+                copyright = GetNativeLegalCopyright(filePath);
             }
         }
 
@@ -631,80 +732,70 @@ namespace Microsoft.DotNet.SignTool
             }
             else
             {
-                Debug.Assert(zipFileSignInfo.IsZipContainer());
+                Debug.Assert(zipFileSignInfo.IsUnpackableContainer());
             }
 
             try
             {
-                using (var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read))
+                var nestedParts = new Dictionary<string, ZipPart>();
+                
+                foreach (var (relativePath, contentStream, contentSize) in ZipData.ReadEntries(archivePath, _pathToContainerUnpackingDirectory, _tarToolPath, _pkgToolPath))
                 {
-                    var nestedParts = new Dictionary<string, ZipPart>();
-
-
-                    foreach (ZipArchiveEntry entry in archive.Entries)
+                    if (contentStream == null)
                     {
-                        string relativePath = entry.FullName;
+                        continue;
+                    }
+                    
+                    using var entryMemoryStream = new MemoryStream((int)contentSize);
+                    contentStream.CopyTo(entryMemoryStream);
+                    entryMemoryStream.Position = 0;
+                    ImmutableArray<byte> contentHash = ContentUtil.GetContentHash(entryMemoryStream);
 
-                        // `entry` might be just a pointer to a folder. We skip those.
-                        if (relativePath.EndsWith("/") && entry.Name == "")
-                        {
-                            continue;
-                        }
+                    var fileUniqueKey = new SignedFileContentKey(contentHash, Path.GetFileName(relativePath));
 
-                        using (var entryStream = entry.Open())
-                        using (MemoryStream entryMemoryStream = new MemoryStream((int)entry.Length))
-                        {
-                            entryStream.CopyTo(entryMemoryStream);
-                            entryMemoryStream.Position = 0;
-                            ImmutableArray<byte> contentHash = ContentUtil.GetContentHash(entryMemoryStream);
-
-                            var fileUniqueKey = new SignedFileContentKey(contentHash, Path.GetFileName(relativePath));
-
-                            if (!_whichPackagesTheFileIsIn.TryGetValue(fileUniqueKey, out var packages))
-                            {
-                                packages = new HashSet<string>();
-                            }
-
-                            packages.Add(Path.GetFileName(archivePath));
-
-                            _whichPackagesTheFileIsIn[fileUniqueKey] = packages;
-
-                            // if we already encountered file that has the same content we can reuse its signed version when repackaging the container.
-                            var fileName = Path.GetFileName(relativePath);
-                            if (!_filesByContentKey.TryGetValue(fileUniqueKey, out var fileSignInfo))
-                            {
-                                string extractPathRoot = _useHashInExtractionPath ? fileUniqueKey.StringHash : _filesByContentKey.Count().ToString();
-                                string tempPath = Path.Combine(_pathToContainerUnpackingDirectory, extractPathRoot, relativePath);
-                                _log.LogMessage($"Extracting file '{fileName}' from '{archivePath}' to '{tempPath}'.");
-
-                                Directory.CreateDirectory(Path.GetDirectoryName(tempPath));
-
-                                entryMemoryStream.Position = 0;
-                                using (var tempFileStream = File.OpenWrite(tempPath))
-                                {
-                                    entryMemoryStream.CopyTo(tempFileStream);
-                                }
-
-                                _hashToCollisionIdMap.TryGetValue(fileUniqueKey, out string collisionPriorityId);
-                                PathWithHash nestedFile = new PathWithHash(tempPath, contentHash);
-                                fileSignInfo = TrackFile(nestedFile, zipFileSignInfo.File, collisionPriorityId);
-                            }
-
-                            if (fileSignInfo.ShouldTrack)
-                            {
-                                nestedParts.Add(relativePath, new ZipPart(relativePath, fileSignInfo));
-                            }
-                        }
+                    if (!_whichPackagesTheFileIsIn.TryGetValue(fileUniqueKey, out var packages))
+                    {
+                        packages = new HashSet<string>();
                     }
 
-                    zipData = new ZipData(zipFileSignInfo, nestedParts.ToImmutableDictionary());
+                    packages.Add(Path.GetFileName(archivePath));
 
-                    return true;
+                    _whichPackagesTheFileIsIn[fileUniqueKey] = packages;
+
+                    // if we already encountered file that has the same content we can reuse its signed version when repackaging the container.
+                    var fileName = Path.GetFileName(relativePath);
+                    if (!_filesByContentKey.TryGetValue(fileUniqueKey, out var fileSignInfo))
+                    {
+                        string extractPathRoot = _useHashInExtractionPath ? fileUniqueKey.StringHash : _filesByContentKey.Count().ToString();
+                        string tempPath = Path.Combine(_pathToContainerUnpackingDirectory, extractPathRoot, relativePath);
+                        _log.LogMessage($"Extracting file '{fileName}' from '{archivePath}' to '{tempPath}'.");
+
+                        Directory.CreateDirectory(Path.GetDirectoryName(tempPath));
+
+                        entryMemoryStream.Position = 0;
+                        using (var tempFileStream = File.OpenWrite(tempPath))
+                        {
+                            entryMemoryStream.CopyTo(tempFileStream);
+                        }
+
+                        _hashToCollisionIdMap.TryGetValue(fileUniqueKey, out string collisionPriorityId);
+                        PathWithHash nestedFile = new PathWithHash(tempPath, contentHash);
+                        fileSignInfo = TrackFile(nestedFile, zipFileSignInfo.File, collisionPriorityId);
+                    }
+
+                    if (fileSignInfo.ShouldTrack)
+                    {
+                        nestedParts.Add(relativePath, new ZipPart(relativePath, fileSignInfo));
+                    }
                 }
+
+                zipData = new ZipData(zipFileSignInfo, nestedParts.ToImmutableDictionary());
+
+                return true;
             }
             catch (Exception e)
             {
-                _log.LogErrorFromException(e);
+                _log.LogErrorFromException(e, true);
                 zipData = null;
                 return false;
             }

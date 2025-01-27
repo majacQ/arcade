@@ -7,8 +7,8 @@
    -->
 
   <PropertyGroup>
-    <MicrosoftDotNetHelixSdkTasksAssembly Condition="'$(MSBuildRuntimeType)' == 'Core'">$(MSBuildThisFileDirectory)../artifacts/bin/Microsoft.DotNet.Helix.Sdk/$(Configuration)/netcoreapp3.1/publish/Microsoft.DotNet.Helix.Sdk.dll</MicrosoftDotNetHelixSdkTasksAssembly>
-    <MicrosoftDotNetHelixSdkTasksAssembly Condition="'$(MSBuildRuntimeType)' != 'Core'">$(MSBuildThisFileDirectory)../artifacts/bin/Microsoft.DotNet.Helix.Sdk/$(Configuration)/net472/publish/Microsoft.DotNet.Helix.Sdk.dll</MicrosoftDotNetHelixSdkTasksAssembly>
+    <MicrosoftDotNetHelixSdkTasksAssembly Condition="'$(MSBuildRuntimeType)' == 'Core'">$(MSBuildThisFileDirectory)../artifacts/bin/Microsoft.DotNet.Helix.Sdk/$(Configuration)/$(NetToolCurrent)/publish/Microsoft.DotNet.Helix.Sdk.dll</MicrosoftDotNetHelixSdkTasksAssembly>
+    <MicrosoftDotNetHelixSdkTasksAssembly Condition="'$(MSBuildRuntimeType)' != 'Core'">$(MSBuildThisFileDirectory)../artifacts/bin/Microsoft.DotNet.Helix.Sdk/$(Configuration)/$(NetFrameworkToolCurrent)/publish/Microsoft.DotNet.Helix.Sdk.dll</MicrosoftDotNetHelixSdkTasksAssembly>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -17,7 +17,6 @@
     <IncludeXHarnessCli>true</IncludeXHarnessCli>
     <EnableAzurePipelinesReporter>true</EnableAzurePipelinesReporter>
     <HelixBaseUri>https://helix.dot.net</HelixBaseUri>
-    <EnableXHarnessTelemetry>true</EnableXHarnessTelemetry>
   </PropertyGroup>
 
   <!-- For non-ci local runs -->

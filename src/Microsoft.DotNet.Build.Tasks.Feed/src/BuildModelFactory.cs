@@ -27,8 +27,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string[] manifestBuildData,
             bool isStableBuild,
             PublishingInfraVersion publishingVersion,
-            bool isReleaseOnlyPackageVersion,
-            SigningInformationModel signingInformationModel = null);
+            bool isReleaseOnlyPackageVersion);
 
         BuildModel CreateModelFromItems(
             ITaskItem[] artifacts,
@@ -42,6 +41,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string repoUri,
             string repoBranch,
             string repoCommit,
+            string repoOrigin,
             bool isStableBuild,
             PublishingInfraVersion publishingVersion,
             bool isReleaseOnlyPackageVersion);
@@ -51,20 +51,17 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
 
     public class BuildModelFactory : IBuildModelFactory
     {
-        private readonly ISigningInformationModelFactory _signingInformationModelFactory;
         private readonly IBlobArtifactModelFactory _blobArtifactModelFactory;
         private readonly IPackageArtifactModelFactory _packageArtifactModelFactory;
         private readonly IFileSystem _fileSystem;
         private readonly TaskLoggingHelper _log;
 
         public BuildModelFactory(
-            ISigningInformationModelFactory signingInformationModelFactory,
             IBlobArtifactModelFactory blobArtifactModelFactory,
             IPackageArtifactModelFactory packageArtifactModelFactory,
             IFileSystem fileSystem,
             TaskLoggingHelper logger)
         {
-            _signingInformationModelFactory = signingInformationModelFactory;
             _blobArtifactModelFactory = blobArtifactModelFactory;
             _packageArtifactModelFactory = packageArtifactModelFactory;
             _fileSystem = fileSystem;
@@ -93,7 +90,6 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         /// <param name="isStableBuild">True if the build is stable, false otherwise.</param>
         /// <param name="publishingVersion">Publishing version in use.</param>
         /// <param name="isReleaseOnlyPackageVersion">True if this repo uses release-only package versions</param>
-        /// <param name="signingInformationModel">Signing information.</param>
         public void CreateBuildManifest(
             IEnumerable<BlobArtifactModel> blobArtifacts,
             IEnumerable<PackageArtifactModel> packageArtifacts,
@@ -105,8 +101,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string[] manifestBuildData,
             bool isStableBuild,
             PublishingInfraVersion publishingVersion,
-            bool isReleaseOnlyPackageVersion,
-            SigningInformationModel signingInformationModel = null)
+            bool isReleaseOnlyPackageVersion)
         {
             BuildModel model = CreateModel(
                 blobArtifacts,
@@ -118,8 +113,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
                 manifestCommit,
                 isStableBuild,
                 publishingVersion,
-                isReleaseOnlyPackageVersion,
-                signingInformationModel: signingInformationModel);
+                isReleaseOnlyPackageVersion);
 
             _log.LogMessage(MessageImportance.High, $"Writing build manifest file '{assetManifestPath}'...");
             _fileSystem.WriteToFile(assetManifestPath, model.ToXml().ToString(SaveOptions.DisableFormatting));
@@ -137,6 +131,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string repoUri,
             string repoBranch,
             string repoCommit,
+            string repoOrigin,
             bool isStableBuild,
             PublishingInfraVersion publishingVersion,
             bool isReleaseOnlyPackageVersion)
@@ -160,7 +155,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
 
                 if (artifact.ItemSpec.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase) && !isSymbolsPackage)
                 {
-                    packageArtifacts.Add(_packageArtifactModelFactory.CreatePackageArtifactModel(artifact));
+                    packageArtifacts.Add(_packageArtifactModelFactory.CreatePackageArtifactModel(artifact, repoOrigin));
                 }
                 else
                 {
@@ -170,13 +165,9 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
                         artifact.SetMetadata("RelativeBlobPath", $"{AssetsVirtualDir}symbols/{fileName}");
                     }
 
-                    blobArtifacts.Add(_blobArtifactModelFactory.CreateBlobArtifactModel(artifact));
+                    blobArtifacts.Add(_blobArtifactModelFactory.CreateBlobArtifactModel(artifact, repoOrigin));
                 }
             }
-
-            var signingInfoModel = _signingInformationModelFactory.CreateSigningInformationModelFromItems(
-                itemsToSign, strongNameSignInfo, fileSignInfo, fileExtensionSignInfo,
-                certificatesSignInfo, blobArtifacts, packageArtifacts);
 
             var buildModel = CreateModel(
                 blobArtifacts,
@@ -188,8 +179,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
                 repoCommit,
                 isStableBuild,
                 publishingVersion,
-                isReleaseOnlyPackageVersion,
-                signingInformationModel: signingInfoModel);
+                isReleaseOnlyPackageVersion);
             return buildModel;
         }
 
@@ -203,8 +193,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
             string manifestCommit,
             bool isStableBuild,
             PublishingInfraVersion publishingVersion,
-            bool isReleaseOnlyPackageVersion,
-            SigningInformationModel signingInformationModel = null)
+            bool isReleaseOnlyPackageVersion)
         {
             var attributes = MSBuildListSplitter.GetNamedProperties(manifestBuildData);
             if (!ManifestBuildDataHasLocationInformation(attributes))
@@ -229,7 +218,6 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
 
             buildModel.Artifacts.Blobs.AddRange(blobArtifacts);
             buildModel.Artifacts.Packages.AddRange(packageArtifacts);
-            buildModel.SigningInformation = signingInformationModel;
             return buildModel;
         }
 
