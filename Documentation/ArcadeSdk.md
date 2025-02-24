@@ -1,10 +1,10 @@
-﻿# Arcade SDK
+# Arcade SDK
 
 Arcade SDK is a set of msbuild props and targets files and packages that provide common build features used across multiple repos, such as CI integration, packaging, VSIX and VS setup authoring, testing, and signing via Microbuild.
 
-The infrastructure of each [repository that contributes to .NET Core 3.0 stack](TierOneRepos.md) is built on top of Arcade SDK. This allows us to orchestrate the build of the entire stack as well as build the stack from source. These repositories are expected to be on the latest version of the Arcade SDK.
+The infrastructure of most repositories that contribute to the .NET stack is built on top of Arcade SDK. This allows us to orchestrate the build of the entire stack as well as build the stack from source. These repositories are expected to be on the latest version of the Arcade SDK.
 
-Repositories that do not participate in .NET Core 3.0 build may also use Arcade SDK in order to take advantage of the common infrastructure.
+Repositories that do not contribute to the .NET stack may also use Arcade SDK in order to take advantage of the common infrastructure.
 
 The goals are
 
@@ -144,7 +144,6 @@ By default, Arcade builds solutions in the root of the repo.  Overriding the def
   Example:
 
   ```xml
-  <?xml version="1.0" encoding="utf-8"?>
   <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <ItemGroup>
       <ProjectToBuild Include="$(MSBuildThisFileDirectory)..\MyProject.proj" />
@@ -220,7 +219,31 @@ optimizations by setting 'RestoreUsingNuGetTargets' to false.
 </Project>
 ```
 
-CoreFx does not use the default build projects in its repo - [example](https://github.com/dotnet/corefx/blob/66392f577c7852092f668876822b6385bcafbd44/eng/Build.props).
+#### Example: batching projects together for more complex build ordering
+
+Arcade builds all passed-in projects in parallel by default. While it's possible to set the `BuildInParallel` property or item metadata, more complex build order requirements might be necessary. When projects should be built in batches, the `BuildStep` item metadata can be used to express that.
+
+Below, the build order is the following: `native1 -> native2 -> java & managed (parallel) -> installer1 & installer2 (parallel) -> cleanup -> optimization.
+```xml
+<!-- eng/Build.props -->
+<Project>
+  <PropertyGroup>
+    <RestoreUsingNuGetTargets>false</RestoreUsingNuGetTargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectToBuild Include="src\native1.proj" BuildStep="native" BuildInParallel="false" />
+    <ProjectToBuild Include="src\native2.proj" BuildStep="native" BuildInParallel="false" />
+    <ProjectToBuild Include="src\java.proj" BuildStep="managed" />
+    <ProjectToBuild Include="src\managed.proj" BuildStep="managed" />
+    <ProjectToBuild Include="src\installer1.proj" BuildStep="installers" />
+    <ProjectToBuild Include="src\installer2.proj" BuildStep="installers" />
+    <ProjectToBuild Include="src\cleanup.proj" BuildStep="finish" BuildInParallel="false" />
+    <ProjectToBuild Include="src\optimization.proj" BuildStep="finish" BuildInParallel="false" />
+  </ItemGroup>
+</Project>
+```
+
+Runtime does not use the default build projects in its repo - [example](https://github.com/dotnet/runtime/blob/1e6311a9795556149b5a051c5f5b2159d5a9765c/eng/Build.props#L7).
 
 ### /eng/Versions.props: A single file listing component versions and used tools
 
@@ -267,6 +290,7 @@ These tools are only used for build operations performed outside of the reposito
 Customization of Authenticode signing process.
 
 Configurable item groups:
+
 - `ItemsToSign`
   List of files to sign in-place, during the build. May list individual files to sign (e.g. .dll, .exe, .ps1, etc.) as well as container files (.nupkg, .vsix, .zip, etc.). All files embedded in a container file are signed (recursively) unless specified otherwise.
 - `ItemsToSignPostBuild`
@@ -279,8 +303,12 @@ Configurable item groups:
   Specifies Authenticode certificate properties, such as whether a certificate allows dual signing.
 - `StrongNameSignInfo`
   Strong Name key to use to sign a specific managed assembly.
+- `Artifact`
+  List of files to sign and publish, either in-place or post-build depending on `PostBuildSign`. May list packages and blobs to publish.
+  More documentation available in the section on Publishing.props.
 
 Properties:
+
 - `AllowEmptySignList`
   True to allow ItemsToSign to be empty (the repository doesn't have any file to sign in-build).
 - `AllowEmptyPostBuildSignList`
@@ -297,6 +325,16 @@ To change the key used for strong-naming assemblies see `StrongNameKeyId` proper
 ### /eng/Publishing.props (optional)
 
 Customization of publishing process.
+
+Configurable item groups:
+
+- `Artifact`: List of files to publish. May list packages and blobs to publish.
+  Supported Metadata:
+  - `Visibility`
+    - Visibility of the artifact. Default is `External`. Visibility options are listed below:
+      - `External`: The artifact is visible outside of the build. It will be uploaded to AzDO artifacts and published to [the Build Asset Registry (BAR)](./Maestro/BuildAssetRegistry.md) as an artifact of the build.
+      - `Internal`: The artifact is visible only within the build. It will be uploaded to AzDO artifacts but not published to BAR.
+      - `Vertical`: The artifact is only visible within a given vertical in a Vertical Build. It will be copied into the local artifacts folder for the repository on disk during a vertical build. It will not be uploaded to AzDO artifacts, nor published to BAR. Any artifacts marked with `Vertical` visibility are also not available in any other Join Points in a Unified Build. See [here](./UnifiedBuild/Unified-Build-Join-Point.md) for more information. `Vertical` visibility is only available in a Vertical Build.
 
 ### /eng/AfterSolutionBuild.targets (optional)
 
@@ -425,6 +463,20 @@ Example
 ```
 
 Note: defining `runtimes` in your global.json will signal to Arcade to install a local version of the SDK for the runtimes to use rather than depending on a matching global SDK.
+
+We include `tools/dotnet` to install the SDK version requested and `sdk` to ensure that SDK (or a slightly newer one) is what's used in builds. we want that alignment to avoid unexpected issues, especially in servicing.
+
+```json
+{
+  "sdk": {
+    "version": "7.0.116",
+    "rollForward": "latestFeature"
+  },
+  "tools": {
+    "dotnet": "7.0.116"
+  }
+}
+```
 
 ### /NuGet.config
 
@@ -630,7 +682,7 @@ The steps below assume the following variables to be defined:
 ### Signing plugin installation
 
 ```yml
-- task: MicroBuildSigningPlugin@3
+- task: MicroBuildSigningPlugin@4
   displayName: Install Signing Plugin
   inputs:
     signType: real
@@ -649,7 +701,7 @@ The following task restores tools that are only available from internal feeds.
       command: restore
       feedsToUse: config
       restoreSolution: 'eng\common\internal\Tools.csproj'
-      nugetConfigPath: 'NuGet.config'
+      nugetConfigPath: 'eng\common\internal\NuGet.config'
       restoreDirectory: '$(Build.SourcesDirectory)\.packages'
 ```
 
@@ -908,7 +960,7 @@ Available values are listed in [StrongName.targets](https://github.com/dotnet/ar
 
 `IsShipping-` properties are project properties that determine which (if any) assets produced by the project are _shipping_. An asset is considered _shipping_ if it is intended to be delivered to customers via an official channel. This channel can be NuGet.org, an official installer, etc. Setting this flag to `true` does not guarantee that the asset will actually ship in the next release of the product. It might be decided after the build is complete that although the artifact is ready for shipping it won't be shipped this release cycle.
 
-By default all assets produced by a project are considered _shipping_. Set `IsShipping` to `false` if none of the assets produced by the project are _shipping_. Test projects (`IsTestProject` is `true`) set `IsShipping` to `false` automatically.
+By default all assets produced by a project are considered _shipping_. Set `IsShipping` to `false` if none of the assets produced by the project are _shipping_. Test projects (`IsTestProject` is `true`) and test utility projects (`IsTestUtilityProject` is `true`) set `IsShipping` to `false` automatically.
 
 Setting `IsShipping` property is sufficient for most projects. Projects that produce both _shipping_ and _non-shipping_ assets need a finer grained control. Set `IsShippingAssembly`, `IsShippingPackage` or `IsShippingVsix` to `false` if the assembly, package, or VSIX produced by the project is not _shipping_, respectively. 
 
@@ -943,6 +995,19 @@ Set to `false` to override the default (uncommon).
 
 Set to `partial` or `full` in a shipping project to require IBC optimization data to be available for the project and embed them into the binary during official build. The value of `partial` indicates partial NGEN, whereas `full` means full NGEN optimization.
 
+### `NetCurrent/NetPrevious/NetMinimum/NetFrameworkMinimum`
+
+Properties that define TargetFramework for use by projects so their targeting easily aligns with the current .NET version in development as well as those that are supported. Arcade will update these properties to match the current supported .NET versions, as well as the release being currently developed.
+
+- NetCurrent - The TFM of the major release of .NET that the Arcade SDK aligns with.
+- NetPrevious - The previously released version of .NET (e.g. this would be net7 if NetCurrent is net8)
+- NetMinimum - Lowest supported version of .NET the time of the release of NetCurrent. E.g. if NetCurrent is net8, then NetMinimum is net6
+- NetFrameworkMinimum - Lowest supported version of .NET Framework the time of the release of NetCurrent. E.g. if NetCurrent is net8, then NetFrameworkMinimum is net462
+
+### `IsTestUtilityProject` (bool)
+
+Set to `true` to indicate that the project is a test utility project. Such are projects that offer utilities to run tests. Example: `Microsoft.DotNet.XUnitExtensions.csproj` in Arcade. This makes are mark them as non-shipping and excluded from source build.
+
 ### `SkipTests` (bool)
 
 Set to `true` in a test project to skip running tests.
@@ -953,6 +1018,10 @@ List of test architectures (`x64`, `x86`) to run tests on.
 If not specified by the project defaults to the value of `PlatformTarget` property, or `x64` if `Platform` is `AnyCPU` or unspecified.
 
 For example, a project that targets `AnyCPU` can opt-into running tests using both 32-bit and 64-bit test runners on .NET Framework by setting `TestArchitectures` to `x64;x86`.
+
+### `TestResultsLogDir` (string)
+
+An alternative path where to save test standard output logs (e.g., `MyProject.Tests_tfm_arch.log`). If not specified, these logs will be saved under the path specified in `$(ArtifactsLogDir)` variable.
 
 ### `TestTargetFrameworks` (list of strings)
 
@@ -997,7 +1066,7 @@ Timeout to apply to an individual invocation of the test runner (e.g. `xunit.con
 
 ### `GenerateResxSource` (bool)
 
-When set to true, Arcade will generate a class source for all embedded .resx files.
+When set to `true`, Arcade will generate a class source for all embedded .resx files.
 
 If source should only be generated for some .resx files, this can be turned on for individual files like this:
 
@@ -1023,7 +1092,14 @@ class Resources
 ```
 
 #### `GenerateResxSourceIncludeDefaultValues` (bool)
-If set to true calls to GetResourceString receive a default resource string value.
+If set to `true` calls to GetResourceString receive a default resource string value.
 
 #### `GenerateResxSourceOmitGetResourceString` (bool)
-If set to true the GetResourceString method is not included in the generated class and must be specified in a separate source file.
+If set to `true` the GetResourceString method is not included in the generated class and must be specified in a separate source file.
+
+#### `FlagNetStandard1XDependencies` (bool)
+If set to `true` the `FlagNetStandard1xDependencies` target validates that the dependency graph doesn't contain any netstandard1.x packages.
+
+<!-- Begin Generated Content: Doc Feedback -->
+<sub>Was this helpful? [![Yes](https://helix.dot.net/f/ip/5?p=Documentation%5CArcadeSdk.md)](https://helix.dot.net/f/p/5?p=Documentation%5CArcadeSdk.md) [![No](https://helix.dot.net/f/in)](https://helix.dot.net/f/n/5?p=Documentation%5CArcadeSdk.md)</sub>
+<!-- End Generated Content-->

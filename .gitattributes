@@ -22,6 +22,7 @@
 *.csproj    		text
 *.groovy			text
 *.json      		text
+*.lss       		text
 *.md        		text
 *.nuspec			text
 *.pkgdef			text
@@ -62,3 +63,9 @@ compat text eol=lf
 *.bats text eol=lf
 *.1 text eol=lf
 *.plist text eol=lf
+
+###############################################################################
+# Set directory behavior to:
+#   not treat as generated
+###############################################################################
+**/build/** linguist-generated=false

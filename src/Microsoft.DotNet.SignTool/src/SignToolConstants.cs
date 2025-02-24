@@ -3,10 +3,27 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace Microsoft.DotNet.SignTool
 {
-    public enum SigningToolErrorCode { SIGN001, SIGN002, SIGN003 };
+    public enum SigningToolErrorCode
+    {
+        /// <summary>
+        /// Signing a Microsoft library with a 3rd party cert
+        /// </summary>
+        SIGN001,
+        /// <summary>
+        /// Unable to determine a certificate for a file that should be signed
+        /// </summary>
+        SIGN002,
+        /// <summary>
+        /// No files to sign.
+        /// </summary>
+        SIGN003,
+        // Signing a 3rd party library with a Microsoft cert.
+        SIGN004
+    };
         
     internal static class SignToolConstants
     {
@@ -15,7 +32,8 @@ namespace Microsoft.DotNet.SignTool
         public const string MsiEngineExtension = "-engine.exe";
         /// <summary>
         /// List of known signable extensions. Copied, removing duplicates, from here:
-        /// https://microsoft.sharepoint.com/teams/codesigninfo/Wiki/Signable%20Files.aspx
+        /// https://microsoft.sharepoint.com/teams/prss/Codesign/SitePages/Signable%20Files.aspx
+        /// ".deb" and ".rpm" are not in the list linked above, but they are known signable extension.
         /// </summary>
         public static readonly HashSet<string> SignableExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -94,19 +112,33 @@ namespace Microsoft.DotNet.SignTool
 
             ".py",
             ".pyd",
+
+            ".deb",
+            ".pkg",
+            ".app",
+            ".dylib",
+            ".rpm",
         };
 
-        /// <summary>
-        /// List of known signable extensions for OSX files.
-        /// </summary>
-        public static readonly HashSet<string> SignableOSXExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ".pkg"
-        };
+
+        public static readonly HashSet<string> MacSigningOperationsRequiringZipping =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "MacDeveloperHarden",
+                    "MacDeveloper",
+                    "MacDeveloperVNext",
+                    "MacDeveloperVNextHarden",
+                    "MacNotarize",
+                };
 
         /// <summary>
         /// Attribute for the CollisionPriorityId
         /// </summary>
         public const string CollisionPriorityId = "CollisionPriorityId";
+        
+        /// <summary>
+        /// Notarization operation microbuild ID. Microbuild does not currently support the friendly name, MacNotarize
+        /// </summary>
+        public const string MacNotarizationOperation = "8020";
     }
 }

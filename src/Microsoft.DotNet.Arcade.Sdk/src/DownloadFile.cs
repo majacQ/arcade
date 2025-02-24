@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
@@ -84,6 +85,12 @@ namespace Microsoft.DotNet.Arcade.Sdk
                     {
                         var encodedTokenBytes = System.Convert.FromBase64String(encodedToken);
                         var decodedToken = System.Text.Encoding.UTF8.GetString(encodedTokenBytes);
+                        // It's possible that the decoded SAS does not begin with the query string parameter.
+                        // Handle cleanly before constructing the final URL
+                        if (!decodedToken.StartsWith("?"))
+                        {
+                            decodedToken = $"?{decodedToken}";
+                        }
                         uri = $"{uri}{decodedToken}";
                     }
 
@@ -104,14 +111,49 @@ namespace Microsoft.DotNet.Arcade.Sdk
             if (uri.StartsWith(FileUriProtocol, StringComparison.Ordinal))
             {
                 var filePath = uri.Substring(FileUriProtocol.Length);
-                Log.LogMessage($"Copying '{filePath}' to '{DestinationPath}'");
-                File.Copy(filePath, DestinationPath, overwrite: true);
-                return true;
+
+                if (File.Exists(filePath)) {
+                    Log.LogMessage($"Copying '{filePath}' to '{DestinationPath}'");
+                    File.Copy(filePath, DestinationPath, overwrite: true);
+                    return true;
+                } else {
+                    Log.LogMessage($"'{filePath}' does not exist.");
+                    return false;
+                }
             }
 
             Log.LogMessage($"Downloading '{uri}' to '{DestinationPath}'");
 
+            // Configure the cert revocation check in a fail-open state to avoid intermittent failures
+            // on Mac if the endpoint is not available. This is only available on .NET Core, but has only been
+            // observed on Mac anyway.
+
+#if NET
+            using SocketsHttpHandler handler = new SocketsHttpHandler();
+            handler.SslOptions.CertificateChainPolicy = new X509ChainPolicy
+            {
+                // Yes, check revocation.
+                // Yes, allow it to be downloaded if needed.
+                // Online is the default, but it doesn't hurt to be explicit.
+                RevocationMode = X509RevocationMode.Online,
+                // Roots never bother with revocation.
+                // ExcludeRoot is the default, but it doesn't hurt to be explicit.
+                RevocationFlag = X509RevocationFlag.ExcludeRoot,
+                // RevocationStatusUnknown at the EndEntity/Leaf certificate will not fail the chain build.
+                // RevocationStatusUnknown for any intermediate CA will not fail the chain build.
+                // IgnoreRootRevocationUnknown could also be specified, but it won't apply given ExcludeRoot above.
+                // The default is that all status codes are bad, this is not the default.
+                VerificationFlags =
+                    X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown |
+                    X509VerificationFlags.IgnoreEndRevocationUnknown,
+                // Always use the "now" when building the chain, rather than the "now" of when this policy object was constructed.
+                VerificationTimeIgnored = true,
+            };
+
+            using (var httpClient = new HttpClient(handler))
+#else
             using (var httpClient = new HttpClient(new HttpClientHandler { CheckCertificateRevocationList = true }))
+#endif
             {
                 httpClient.Timeout = TimeSpan.FromSeconds(TimeoutInSeconds);
                 try
@@ -160,7 +202,13 @@ namespace Microsoft.DotNet.Arcade.Sdk
 
                     return true;
                 }
-                catch (Exception e) when (e is HttpRequestException || e is IOException && !(e is DirectoryNotFoundException || e is PathTooLongException))
+                // Retry cases:
+                // 1. Plain Http error
+                // 2. IOExceptions that aren't definitely deterministic (such as antivirus was scanning the file)
+                // 3. HttpClient Timeouts - these surface as TaskCanceledExceptions that don't match our cancellation token source
+                catch (Exception e) when (e is HttpRequestException ||  
+                                          e is IOException && !(e is DirectoryNotFoundException || e is PathTooLongException) ||
+                                          e is Tasks.TaskCanceledException && ((Tasks.TaskCanceledException)e).CancellationToken != _cancellationSource.Token)
                 {
                     attempt++;
 
@@ -171,6 +219,7 @@ namespace Microsoft.DotNet.Arcade.Sdk
                     }
 
                     Log.LogMessage($"Retrying download of '{uri}' to '{DestinationPath}' due to failure: '{e.Message}' ({attempt}/{Retries})");
+                    Log.LogErrorFromException(e, true, true, null);
 
                     await Tasks.Task.Delay(RetryDelayMilliseconds).ConfigureAwait(false);
                     continue;

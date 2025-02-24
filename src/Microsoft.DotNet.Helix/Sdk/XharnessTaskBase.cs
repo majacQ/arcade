@@ -1,3 +1,6 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -14,7 +17,7 @@ namespace Microsoft.DotNet.Helix.Sdk
     {
         private static readonly TimeSpan s_defaultWorkItemTimeout = TimeSpan.FromMinutes(20);
         private static readonly TimeSpan s_defaultTestTimeout = TimeSpan.FromMinutes(12);
-        protected static readonly TimeSpan s_telemetryBuffer = TimeSpan.FromSeconds(20); // extra time to send the XHarness telemetry
+        private static readonly TimeSpan s_telemetryBuffer = TimeSpan.FromMinutes(2); // extra time to send the XHarness telemetry
 
         public class MetadataName
         {
@@ -26,7 +29,7 @@ namespace Microsoft.DotNet.Helix.Sdk
 
         protected const string ScriptNamespace = "tools.xharness_runner.";
         private const string CustomCommandsScript = "command";
-        private const string DiagnosticsScript = "xharness-event-reporter.py";
+        private const string DiagnosticsScript = "xharness-event-processor.py";
 
         /// <summary>
         /// Extra arguments that will be passed to the iOS/Android/... app that is being run

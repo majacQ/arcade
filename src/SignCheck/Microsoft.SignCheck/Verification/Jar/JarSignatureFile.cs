@@ -209,7 +209,7 @@ namespace Microsoft.SignCheck.Verification.Jar
             byte[] signatureBlockBytes = JarUtils.ReadBytes(ArchivePath, SignatureBlockFilePath);
             byte[] signatureFileBytes = JarUtils.ReadBytes(ArchivePath, SignatureFilePath);
 
-            SHA1Managed sha = new SHA1Managed();
+            SHA1 sha = SHA1.Create(); // lgtm [cs/weak-crypto] Hash algorithm specified by signature algorithm
             byte[] hash = sha.ComputeHash(signatureFileBytes);
 
             ContentInfo ci = new ContentInfo(signatureFileBytes);
@@ -240,7 +240,7 @@ namespace Microsoft.SignCheck.Verification.Jar
             byte[] signatureBlockBytes = JarUtils.ReadBytes(ArchivePath, SignatureBlockFilePath);
             byte[] signatureFileBytes = JarUtils.ReadBytes(ArchivePath, SignatureFilePath);
 
-            SHA256Managed sha = new SHA256Managed();
+            SHA256 sha = SHA256.Create();
             byte[] hash = sha.ComputeHash(signatureFileBytes);
 
             ContentInfo ci = new ContentInfo(signatureFileBytes);

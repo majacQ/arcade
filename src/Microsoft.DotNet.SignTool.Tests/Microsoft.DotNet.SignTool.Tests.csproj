@@ -1,33 +1,79 @@
-<!-- Licensed to the .NET Foundation under one or more agreements. The .NET Foundation licenses this file to you under the MIT license. -->
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <TargetFrameworks>net472;netcoreapp3.1</TargetFrameworks>
-    <LangVersion>Latest</LangVersion>
+    <TargetFrameworks>$(NetToolCurrent);$(NetFrameworkToolCurrent)</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.ApplicationInsights" Version="$(MicrosoftApplicationInsightsVersion)" />
-    <PackageReference Include="FluentAssertions" Version="$(FluentAssertionsVersion)" />
-    <PackageReference Include="System.IO.Packaging" Version="$(SystemIOPackagingVersion)" />
-    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="$(MicrosoftBuildUtilitiesCoreVersion)" />
-    <PackageReference Include="Microsoft.Build.Framework" Version="$(MicrosoftBuildFrameworkVersion)" />
-    <PackageReference Include="WiX" Version="3.14.0-dotnet" GeneratePathProperty="true" />
-    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
-    <PackageReference Include="NuGet.Packaging.Core" Version="$(NuGetVersion)" />
-    <PackageReference Include="System.Collections.Immutable" Version="$(SystemCollectionsImmutableVersion)" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Common\Microsoft.Arcade.Test.Common\Microsoft.Arcade.Test.Common.csproj" />
-    <ProjectReference Include="..\..\src\Microsoft.DotNet.SignTool\Microsoft.DotNet.SignTool.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="Resources\**">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-    <Content Include="$(PkgWix)\tools\**">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      <Link>tools\wix\%(RecursiveDir)%(Filename)%(Extension)</Link>
-    </Content>
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" />
+    <PackageReference Include="Microsoft.Build.Framework" />
+    <PackageReference Include="NuGet.Packaging" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Common\Microsoft.Arcade.Test.Common\Microsoft.Arcade.Test.Common.csproj" />
+    <ProjectReference Include="..\Microsoft.DotNet.SignTool\Microsoft.DotNet.SignTool.csproj" />
+    <ProjectReference Include="..\Microsoft.DotNet.XUnitExtensions\src\Microsoft.DotNet.XUnitExtensions.csproj" />
+
+    <ProjectReference Include="..\Microsoft.DotNet.Tar\Microsoft.DotNet.Tar.csproj"
+                      ReferenceOutputAssembly="false"
+                      SetTargetFramework="TargetFramework=$(NetToolCurrent)"
+                      SkipGetTargetFrameworkProperties="true"
+                      Private="false"
+                      OutputItemType="_TarToolPath" />
+
+    <ProjectReference Include="..\Microsoft.DotNet.MacOsPkg\Cli\Microsoft.DotNet.MacOsPkg.Cli.csproj"
+                      ReferenceOutputAssembly="false"
+                      SetTargetFramework="TargetFramework=$(NetToolCurrent)"
+                      SkipGetTargetFrameworkProperties="true"
+                      Private="false"
+                      OutputItemType="_PkgToolPath" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageDownload Include="Microsoft.Signed.Wix" Version="[$(MicrosoftSignedWixVersion)]" />
+    <PackageDownload Include="sn" Version="[$(SNVersion)]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Resources\**"
+             CopyToOutputDirectory="Always" />
+    <Content Include="$(NuGetPackageRoot)microsoft.signed.wix\$(MicrosoftSignedWixVersion)\tools\**"
+             CopyToOutputDirectory="Always"
+             Link="tools\wix\%(RecursiveDir)%(Filename)%(Extension)" />
+
+    <Content Include="$(NuGetPackageRoot)sn\$(SNVersion)\sn.exe*"
+               CopyToOutputDirectory="PreserveNewest"
+               Link="tools\sn\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Content Include="$(NuGetPackageRoot)sn\$(SNVersion)\1033\*"
+               CopyToOutputDirectory="PreserveNewest"
+               Link="tools\sn\1033\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <Target Name="_CopyTarTool" AfterTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_TarToolPattern>@(_TarToolPath->'%(RootDir)%(Directory)')**\*.*</_TarToolPattern>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TarToolFiles Include="$(_TarToolPattern)" />
+    </ItemGroup>
+    <ItemGroup>
+      <Content Include="@(_TarToolFiles)" CopyToOutputDirectory="PreserveNewest" Link="tools\tar\%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Copy the tooling even on platforms that won't use it, since we might run these
+       tests in Helix, on another platform. -->
+  <Target Name="_CopyPkgTool" AfterTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_PkgToolPattern>@(_PkgToolPath->'%(RootDir)%(Directory)')**\*.*</_PkgToolPattern>
+    </PropertyGroup>
+    <ItemGroup>
+      <_PkgToolFiles Include="$(_PkgToolPattern)"/>
+    </ItemGroup>
+    <ItemGroup>
+      <Content Include="@(_PkgToolFiles)" CopyToOutputDirectory="PreserveNewest" Link="tools\pkg\%(RecursiveDir)%(Filename)%(Extension)"/>
+    </ItemGroup>
+  </Target>
 </Project>

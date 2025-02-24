@@ -82,6 +82,12 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         public string RepoCommit { get; set; }
 
         /// <summary>
+        /// Indicates the source of the artifacts. For a VMR build, the repository name is dotnet/dotnet,
+        /// while the repository origin name corresponds to the actual product repository.
+        /// </summary>
+        public string RepoOrigin { get; set; }
+
+        /// <summary>
         /// Is this manifest for a stable build?
         /// </summary>
         public bool IsStableBuild { get; set; }
@@ -99,9 +105,9 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         public override void ConfigureServices(IServiceCollection collection)
         {
             collection.TryAddSingleton<IBuildModelFactory, BuildModelFactory>();
-            collection.TryAddSingleton<ISigningInformationModelFactory, SigningInformationModelFactory>();
             collection.TryAddSingleton<IBlobArtifactModelFactory, BlobArtifactModelFactory>();
             collection.TryAddSingleton<IPackageArtifactModelFactory, PackageArtifactModelFactory>();
+            collection.TryAddSingleton<IPdbArtifactModelFactory, PdbArtifactModelFactory>();
             collection.TryAddSingleton<INupkgInfoFactory, NupkgInfoFactory>();
             collection.TryAddSingleton<IPackageArchiveReaderFactory, PackageArchiveReaderFactory>();
             collection.TryAddSingleton<IFileSystem, FileSystem>();
@@ -113,7 +119,7 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
         {
             try
             {
-                PublishingInfraVersion targetPublishingVersion = PublishingInfraVersion.Legacy;
+                PublishingInfraVersion targetPublishingVersion = PublishingInfraVersion.Latest;
 
                 if (!string.IsNullOrEmpty(PublishingVersion)) 
                 {
@@ -124,18 +130,15 @@ namespace Microsoft.DotNet.Build.Tasks.Feed
                     }
                 }
                 
-                var buildModel = buildModelFactory.CreateModelFromItems(
+                var buildModel = buildModelFactory.CreateModel(
                     Artifacts,
-                    ItemsToSign,
-                    StrongNameSignInfo,
-                    FileSignInfo,
-                    FileExtensionSignInfo,
-                    CertificatesSignInfo,
+                    ArtifactVisibility.All,
                     BuildId,
                     BuildData,
                     RepoUri,
                     RepoBranch,
                     RepoCommit,
+                    RepoOrigin,
                     IsStableBuild,
                     targetPublishingVersion,
                     IsReleaseOnlyPackageVersion);

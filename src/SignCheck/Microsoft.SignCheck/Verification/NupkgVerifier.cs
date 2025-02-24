@@ -12,7 +12,7 @@ using NuGet.Packaging.Signing;
 
 namespace Microsoft.SignCheck.Verification
 {
-    public class NupkgVerifier : ArchiveVerifier
+    public class NupkgVerifier : ZipVerifier
     {
         public NupkgVerifier(Log log, Exclusions exclusions, SignatureVerificationOptions options) : base(log, exclusions, options, fileExtension: ".nupkg")
         {
@@ -20,31 +20,23 @@ namespace Microsoft.SignCheck.Verification
         }
 
         public override SignatureVerificationResult VerifySignature(string path, string parent, string virtualPath) 
+            => VerifySupportedFileType(path, parent, virtualPath);
+
+        protected override bool IsSigned(string path, SignatureVerificationResult svr)
         {
-            SignatureVerificationResult svr = new SignatureVerificationResult(path, parent, virtualPath);
-            string fullPath = svr.FullPath;
-
-            svr.IsSigned = IsSigned(fullPath);
-            svr.AddDetail(DetailKeys.File, SignCheckResources.DetailSigned, svr.IsSigned);
-            VerifyContent(svr);
-
-            return svr;
-        }
-
-        private bool IsSigned(string path)
-        {
-            IEnumerable<ISignatureVerificationProvider> providers = SignatureVerificationProviderFactory.GetSignatureVerificationProviders();
-            var packageSignatureVerifier = new PackageSignatureVerifier(providers);
-
+            List<ISignatureVerificationProvider> providers = new()
+            {
+                new IntegrityVerificationProvider(),
+                new SignatureTrustAndValidityVerificationProvider(),
+            };
             var verifierSettings = SignedPackageVerifierSettings.GetVerifyCommandDefaultPolicy();
-            IEnumerable<ISignatureVerificationProvider> verificationProviders = SignatureVerificationProviderFactory.GetSignatureVerificationProviders();
-            var verifier = new PackageSignatureVerifier(verificationProviders);
+            var packageSignatureVerifier = new PackageSignatureVerifier(providers);
 
             using (var pr = new PackageArchiveReader(path))
             {
                 Task<VerifySignaturesResult> verifySignatureResult = packageSignatureVerifier.VerifySignaturesAsync(pr, verifierSettings, CancellationToken.None);
 
-                return verifySignatureResult.Result.Valid;
+                return verifySignatureResult.Result.IsValid;
             }
         }
     }

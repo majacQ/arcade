@@ -1,7 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Arcade.Common;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Utilities;
 using NuGet.Frameworks;
@@ -234,14 +233,17 @@ namespace Microsoft.DotNet.Build.Tasks.Packaging
             }
 
             // inspect any TFMs inbox
-            var index = PackageIndex.Load(PackageIndexes.Select(pi => pi.GetMetadata("FullPath")));
-            var inboxFrameworks = index.GetInboxFrameworks(PackageId).NullAsEmpty();
-            
-            foreach (var inboxFramework in inboxFrameworks)
+            if (PackageIndexes != null && PackageIndexes.Length > 0)
             {
-                if (!_frameworks.ContainsKey(inboxFramework))
+                var index = PackageIndex.Load(PackageIndexes.Select(pi => pi.GetMetadata("FullPath")));
+                var inboxFrameworks = index.GetInboxFrameworks(PackageId).NullAsEmpty();
+                
+                foreach (var inboxFramework in inboxFrameworks)
                 {
-                    _frameworks.Add(inboxFramework, s_noRids);
+                    if (!_frameworks.ContainsKey(inboxFramework))
+                    {
+                        _frameworks.Add(inboxFramework, s_noRids);
+                    }
                 }
             }
 
